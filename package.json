@@ -1,0 +1,15 @@
+{
+  "name": "chaoxing-grader",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "chaoxing-grader": "./chaoxing-grader.mjs"
+  },
+  "scripts": {
+    "check": "node --check chaoxing-grader.mjs && node --check collect_all_assignments.mjs && node --check report_all_assignments.mjs && node --check apply_advanced_similarity.mjs && node --check build_advanced_report.mjs && node --check model_similarity_review.mjs && node --check mimo_openclaw_regrade.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
