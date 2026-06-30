@@ -7,6 +7,15 @@ export const assignments = [
   },
 ];
 
+export const classAssignmentRules = [
+  // Example:
+  // {
+  //   className: 'Class A',
+  //   includeKeys: ['assignment-1', 'assignment-2'],
+  //   note: 'Class A only needs these assignments for ranking.',
+  // },
+];
+
 export function selectedAssignments(keys = []) {
   const wanted = new Set(keys.filter(Boolean));
   return wanted.size

@@ -2,7 +2,7 @@
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignments } from './assignment_manifest.mjs';
+import { assignments, classAssignmentRules } from './assignment_manifest.mjs';
 
 const baseDir = path.dirname(fileURLToPath(import.meta.url));
 const statusPath = path.join(baseDir, 'report_all_status.json');
@@ -118,9 +118,42 @@ function toCsv(rows, columns) {
   ].join('\n') + '\n';
 }
 
+function ruleApplies(rule, className) {
+  if (rule.className && rule.className === className) return true;
+  if (rule.classNamePattern) return new RegExp(rule.classNamePattern).test(className);
+  return false;
+}
+
+function assignmentTokens(assignment) {
+  return new Set([
+    assignment.key,
+    assignment.id,
+    assignment.runDirName,
+    assignment.title,
+    assignment.runDir,
+  ].filter(Boolean));
+}
+
+function hasToken(tokens, values = []) {
+  return values.some(value => tokens.has(value));
+}
+
+function isAssignedToClass(className, assignment) {
+  const rules = (classAssignmentRules || []).filter(rule => ruleApplies(rule, className));
+  if (!rules.length) return true;
+  const tokens = assignmentTokens(assignment);
+  const includeRules = rules.filter(rule => Array.isArray(rule.includeKeys) && rule.includeKeys.length);
+  const included = includeRules.length
+    ? includeRules.some(rule => hasToken(tokens, rule.includeKeys))
+    : true;
+  const excluded = rules.some(rule => hasToken(tokens, rule.excludeKeys || []));
+  return included && !excluded;
+}
+
 const status = await readJson(statusPath, { generatedAt: new Date().toISOString(), results: [] });
 const generatedAt = status.generatedAt || new Date().toISOString();
 const manifestOrder = new Map(assignments.map((item, index) => [path.basename(item.runDir), index + 1]));
+const manifestByRunDirName = new Map(assignments.map(item => [path.basename(item.runDir), item]));
 
 const assignmentRecords = [];
 for (const [index, row] of (status.results || []).entries()) {
@@ -132,9 +165,11 @@ for (const [index, row] of (status.results || []).entries()) {
   const drafts = await readJson(draftPath, []);
   if (!Array.isArray(drafts) || drafts.length === 0) continue;
   const runDirName = path.basename(runDir);
+  const manifest = manifestByRunDirName.get(runDirName);
   assignmentRecords.push({
     id: runDirName,
-    title: row.title || runDirName,
+    key: manifest?.key || runDirName,
+    title: row.title || manifest?.title || runDirName,
     order: manifestOrder.get(runDirName) || orderFromTitle(row.title || runDirName, index + 1),
     runDirName,
     runDir,
@@ -153,6 +188,7 @@ for (const assignment of assignmentRecords) {
   const byClass = new Map();
   for (const row of assignment.drafts) {
     const className = String(row.className || '未分班');
+    if (!isAssignedToClass(className, assignment)) continue;
     if (!byClass.has(className)) byClass.set(className, []);
     byClass.get(className).push(row);
 

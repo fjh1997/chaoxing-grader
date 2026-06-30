@@ -2,7 +2,7 @@
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignments } from './assignment_manifest.mjs';
+import { assignments, classAssignmentRules } from './assignment_manifest.mjs';
 
 const baseDir = path.dirname(fileURLToPath(import.meta.url));
 const jsonPath = path.join(baseDir, 'score_rankings_early_bonus.json');
@@ -119,6 +119,38 @@ function compareStudent(a, b) {
     || String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
 }
 
+function ruleApplies(rule, className) {
+  if (rule.className && rule.className === className) return true;
+  if (rule.classNamePattern) return new RegExp(rule.classNamePattern).test(className);
+  return false;
+}
+
+function assignmentTokens(assignment) {
+  return new Set([
+    assignment.key,
+    assignment.id,
+    assignment.runDirName,
+    assignment.title,
+    assignment.runDir,
+  ].filter(Boolean));
+}
+
+function hasToken(tokens, values = []) {
+  return values.some(value => tokens.has(value));
+}
+
+function isAssignedToClass(className, assignment) {
+  const rules = (classAssignmentRules || []).filter(rule => ruleApplies(rule, className));
+  if (!rules.length) return true;
+  const tokens = assignmentTokens(assignment);
+  const includeRules = rules.filter(rule => Array.isArray(rule.includeKeys) && rule.includeKeys.length);
+  const included = includeRules.length
+    ? includeRules.some(rule => hasToken(tokens, rule.includeKeys))
+    : true;
+  const excluded = rules.some(rule => hasToken(tokens, rule.excludeKeys || []));
+  return included && !excluded;
+}
+
 const classMap = new Map();
 const assignmentSummaries = [];
 
@@ -126,6 +158,7 @@ for (const item of assignments) {
   const runDir = path.isAbsolute(item.runDir)
     ? item.runDir
     : path.resolve(baseDir, item.runDir.replace(/^chaoxing-grader[\\/]/, ''));
+  const assignmentMeta = { ...item, id: path.basename(runDir), runDirName: path.basename(runDir), runDir };
   const drafts = await readJson(path.join(runDir, 'grading_draft.json'), []);
   if (!Array.isArray(drafts) || drafts.length === 0) continue;
   const submissions = await loadSubmissions(runDir);
@@ -145,6 +178,7 @@ for (const item of assignments) {
   const byClass = new Map();
   for (const row of rows) {
     const className = String(row.className || '未分班');
+    if (!isAssignedToClass(className, assignmentMeta)) continue;
     if (!byClass.has(className)) byClass.set(className, []);
     byClass.get(className).push(row);
   }
@@ -174,10 +208,11 @@ for (const item of assignments) {
       })),
     });
   }
-  assignmentSummaries.push({ id: path.basename(runDir), title: item.title, runDir, classes: classSummaries });
+  assignmentSummaries.push({ id: assignmentMeta.id, title: item.title, runDir, classes: classSummaries });
 
   for (const row of rows) {
     const className = String(row.className || '未分班');
+    if (!isAssignedToClass(className, assignmentMeta)) continue;
     const key = String(row.studentNo || row.name || row.workAnswerId);
     if (!classMap.has(className)) classMap.set(className, { className, students: new Map(), assignmentCount: 0 });
     const classItem = classMap.get(className);
