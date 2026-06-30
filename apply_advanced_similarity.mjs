@@ -130,6 +130,56 @@ function confirmedDirectPairs(pairs) {
   return pairs.filter(pair => pair.verdict === 'confirmed' && !hasHardEvidence(pair));
 }
 
+function pairKey(row) {
+  return [String(row.aWorkAnswerId), String(row.bWorkAnswerId)].sort().join('__');
+}
+
+function shouldApplyModelReview(review) {
+  return review
+    && review.apiOk !== false
+    && Number(review.confidence || 0) > 0
+    && ['confirmed', 'suspected', 'ignore'].includes(String(review.appliedVerdict || ''));
+}
+
+async function applyModelReviewsToPairs(dir, pairs) {
+  const reviews = await readJsonOptional(path.join(dir, 'model_similarity_review.json'), []);
+  if (!Array.isArray(reviews) || !reviews.length) return { pairs, changed: 0, applied: 0 };
+  const byKey = new Map(reviews.filter(shouldApplyModelReview).map(row => [row.key || pairKey(row), row]));
+  if (!byKey.size) return { pairs, changed: 0, applied: 0 };
+  let changed = 0;
+  let applied = 0;
+  const updated = pairs.map(pair => {
+    const review = byKey.get(pairKey(pair));
+    if (!review) return pair;
+    applied++;
+    const next = {
+      ...pair,
+      modelReview: {
+        model: review.model,
+        verdict: review.modelVerdict,
+        appliedVerdict: review.appliedVerdict,
+        confidence: review.confidence,
+        sameImage: review.sameImage,
+        sameCoreEvidence: review.sameCoreEvidence,
+        templateSimilarityOnly: review.templateSimilarityOnly,
+        sharedEvidence: review.sharedEvidence,
+        differences: review.differences,
+        comment: review.comment,
+      },
+      verdict: review.appliedVerdict,
+      verdictSource: 'mimo-vision',
+      decisionReason: `Mimo 成对识图复核：${review.comment || review.modelVerdict || review.appliedVerdict}`,
+    };
+    if (pair.verdict !== next.verdict || pair.verdictSource !== next.verdictSource) changed++;
+    return next;
+  });
+  if (changed) {
+    await writeFile(path.join(dir, 'advanced_similarity.json'), JSON.stringify(updated, null, 2), 'utf8');
+    await writeFile(path.join(dir, 'advanced_similarity.csv'), toCsv(updated, Object.keys(updated[0] || {})), 'utf8');
+  }
+  return { pairs: updated, changed, applied };
+}
+
 function hardEvidenceGroupKeys(pair) {
   const exact = String(pair.exactShared || '')
     .split(/[;,]/)
@@ -422,7 +472,9 @@ function applyScorePolicy(row, overrides, sub) {
 async function main() {
   const currentDrafts = await readJson(path.join(runDir, 'grading_draft.json'));
   let drafts = await loadDraftBaseline(runDir, currentDrafts);
-  const pairs = await readJson(path.join(runDir, 'advanced_similarity.json'));
+  let pairs = await readJson(path.join(runDir, 'advanced_similarity.json'));
+  const modelReviewApply = await applyModelReviewsToPairs(runDir, pairs);
+  pairs = modelReviewApply.pairs;
   const submissions = await loadSubmissions(runDir);
   const localOverrides = await applyLocalVisionOverrides(runDir, submissions);
   const gradeOverrides = process.env.USE_MANUAL_GRADE_OVERRIDES === '1'
@@ -477,6 +529,7 @@ async function main() {
     'approved', 'skip', 'className', 'name', 'studentNo', 'workAnswerId',
     'status', 'existingScore', 'draftScore', 'draftComment', 'risk', 'basis', 'reviewUrl',
   ]), 'utf8');
+  if (modelReviewApply.applied) console.log(`Applied Mimo model pair reviews: ${modelReviewApply.applied}, changed pairs: ${modelReviewApply.changed}`);
   if (localOverrides) console.log(`Applied local vision overrides: ${localOverrides}`);
   console.log(`Wrote: ${path.join(runDir, 'grading_draft_advanced.csv')}`);
 }
