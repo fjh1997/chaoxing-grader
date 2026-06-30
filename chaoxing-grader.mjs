@@ -2018,32 +2018,118 @@ async function browserReviewData(reviewUrl) {
 }
 
 async function browserSubmitReview(reviewUrl, score, comment) {
+  const normalizeScore = value => {
+    const number = Number(String(value ?? '').trim());
+    return Number.isFinite(number) ? String(number) : String(value ?? '').trim();
+  };
+  const normalizeReviewText = value => {
+    const div = document.createElement('div');
+    div.innerHTML = String(value ?? '');
+    return (div.textContent || div.innerText || String(value ?? ''))
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+  const escapeHtml = value => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  const targetScore = String(score ?? '').trim();
+  const targetComment = String(comment ?? '').trim();
+  const htmlComment = /<\/?[a-z][\s\S]*>/i.test(targetComment)
+    ? targetComment
+    : `<p>${escapeHtml(targetComment)}</p>`;
   const html = await fetch(reviewUrl, { credentials: 'include' }).then(r => r.text());
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const form = doc.querySelector('form[action*="save-review"], form');
   if (!form) return { ok: false, error: 'review form not found' };
-  const action = new URL(form.getAttribute('action') || '/mooc2-ans/work/library/save-review', location.href).href;
-  const data = new FormData();
+  const action = new URL(form.getAttribute('action') || '/mooc2-ans/work/library/save-review', location.href);
+  action.searchParams.set('score', targetScore);
+  action.searchParams.set('markType', '1');
+  const data = new URLSearchParams();
   for (const el of [...form.querySelectorAll('input, textarea, select')]) {
     if (!el.name || el.disabled) continue;
     if ((el.type === 'checkbox' || el.type === 'radio') && !el.checked) continue;
+    if (el.tagName === 'SELECT' && el.multiple) {
+      for (const option of [...el.options].filter(o => o.selected)) {
+        data.append(el.name, option.value ?? '');
+      }
+      continue;
+    }
     data.append(el.name, el.value ?? '');
   }
-  for (const [key] of [...data.entries()]) {
-    if (/^score\d*$/.test(key) || key === 'score') data.set(key, score);
-    if (/^answer\d*$/.test(key) || key === 'comment' || key === 'reason') data.set(key, comment);
+
+  data.set('score', targetScore);
+  data.set('markType', '1');
+  data.set('back', '1');
+
+  const questionScoreNames = [...form.querySelectorAll('input[name^="score"]')]
+    .map(el => el.name)
+    .filter(name => /^score\d+$/.test(name));
+  for (const key of questionScoreNames) {
+    data.set(key, targetScore);
   }
-  const scoreInputs = [...form.querySelectorAll('input[name^="score"], input#score')].map(el => el.name).filter(Boolean);
-  if (!scoreInputs.length) data.set('score', score);
-  const commentInputs = [...form.querySelectorAll('textarea[name^="answer"], textarea[name="comment"], textarea[name="reason"]')].map(el => el.name).filter(Boolean);
-  if (!commentInputs.length) data.set('comment', comment);
-  const res = await fetch(action, {
+
+  const questionIds = [...new Set(questionScoreNames.map(name => name.replace(/^score/, '')).filter(Boolean))];
+  if (questionIds.length) data.set('answerwqbid', `${questionIds.join(',')},`);
+
+  const commentInputs = [...form.querySelectorAll('textarea[name^="answer"], textarea[name="comment"], textarea[name="reason"]')]
+    .map(el => el.name)
+    .filter(Boolean);
+  for (const key of commentInputs) {
+    data.set(key, htmlComment);
+  }
+  if (!commentInputs.includes('comment')) data.set('comment', htmlComment);
+
+  const res = await fetch(action.href, {
     method: 'POST',
     credentials: 'include',
-    body: data,
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'x-requested-with': 'XMLHttpRequest',
+    },
+    body: data.toString(),
   });
   const text = await res.text();
-  return { ok: res.ok && !/失败|错误|error/i.test(text.slice(0, 500)), status: res.status, text: text.slice(0, 500) };
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // Some pages return text during transient login or throttling states.
+  }
+  const postOk = res.ok && (json ? json.status !== false : !/失败|错误|error/i.test(text.slice(0, 500)));
+
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const verifyUrl = new URL(reviewUrl, location.href);
+  verifyUrl.searchParams.set('_verify', String(Date.now()));
+  const verifyHtml = await fetch(verifyUrl.href, { credentials: 'include', cache: 'no-store' }).then(r => r.text());
+  const verifyDoc = new DOMParser().parseFromString(verifyHtml, 'text/html');
+  const scoreValues = [
+    verifyDoc.querySelector('#tmpscore')?.value,
+    verifyDoc.querySelector('input[name="score"]')?.value,
+    ...[...verifyDoc.querySelectorAll('input[name^="score"]')]
+      .filter(el => /^score\d+$/.test(el.name || ''))
+      .map(el => el.value),
+  ].filter(value => value != null && value !== '');
+  const savedComment = verifyDoc.querySelector('textarea[name="comment"], textarea[name="reason"], #textCon')?.value || '';
+  const expectedComment = normalizeReviewText(targetComment);
+  const actualComment = normalizeReviewText(savedComment);
+  const commentOk = !expectedComment || actualComment.includes(expectedComment);
+  const scoreOk = scoreValues.some(value => normalizeScore(value) === normalizeScore(targetScore));
+
+  return {
+    ok: Boolean(postOk && scoreOk && commentOk),
+    status: res.status,
+    postOk,
+    response: json || text.slice(0, 300),
+    scoreOk,
+    commentOk,
+    scoreValues,
+    commentPreview: actualComment.slice(0, 160),
+    action: action.pathname + action.search,
+  };
 }
 
 async function main() {
