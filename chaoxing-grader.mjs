@@ -149,7 +149,7 @@ async function closeTab(target) {
 }
 
 async function evalIn(target, fn, ...args) {
-  const expression = `(${fn})(...${JSON.stringify(args)})`;
+  const expression = `(async()=>await (${fn})(...${JSON.stringify(args)}))()`;
   const attempts = fn?.name === 'browserSubmitReview'
     ? 1
     : Number(process.env.CDP_EVAL_RETRIES || 4);
@@ -570,10 +570,13 @@ async function vision(opts) {
     const outFile = path.join(visionDir, `${slug(submission.className)}_${slug(submission.studentNo)}_${slug(submission.name)}_${submission.workAnswerId}.json`);
     if (!opts.force && await fileExists(outFile)) {
       const cached = await readJson(outFile);
-      submission.vision = cached;
-      rows.push(visionSummaryRow(submission, cached));
-      console.log(`[${index + 1}/${selected.length}] cached ${submission.name}`);
-      continue;
+      if (isVisionCacheFresh(cached, submission)) {
+        submission.vision = cached;
+        rows.push(visionSummaryRow(submission, cached));
+        console.log(`[${index + 1}/${selected.length}] cached ${submission.name}`);
+        continue;
+      }
+      console.log(`[${index + 1}/${selected.length}] stale-cache ${submission.name}`);
     }
     console.log(`[${index + 1}/${selected.length}] vision ${submission.className} ${submission.name} ${submission.studentNo}`);
     const result = await analyzeSubmissionVision(submission, runDir, {
@@ -802,7 +805,7 @@ function reviewComment(submission) {
 }
 
 async function analyzeSubmissionVision(submission, runDir, config) {
-  const assets = (submission.assets || []).filter(a => a.ok && a.file);
+  const assets = selectVisionAssets(submission);
   if (!assets.length) {
     return {
       model: config.model,
@@ -820,8 +823,7 @@ async function analyzeSubmissionVision(submission, runDir, config) {
     };
   }
 
-  const maxImages = Number(process.env.MIMO_MAX_IMAGES || 6);
-  const selectedAssets = assets.slice(0, maxImages);
+  const selectedAssets = assets;
   const imageParts = [];
   for (const asset of selectedAssets) {
     const prepared = await prepareImageForModel(path.resolve(runDir, asset.file), runDir);
@@ -874,6 +876,52 @@ async function analyzeSubmissionVision(submission, runDir, config) {
   normalized.rawText = content;
   normalized.usedImages = selectedAssets.map(a => a.file);
   return normalized;
+}
+
+function visionMaxImages() {
+  const n = Number(process.env.MIMO_MAX_IMAGES || 6);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 6;
+}
+
+function isLikelyStudentAnswerImage(asset) {
+  const bytes = Number(asset?.bytes || 0);
+  const minBytes = Number(process.env.MIMO_MIN_IMAGE_BYTES || 5000);
+  const file = String(asset?.file || asset?.name || '').toLowerCase();
+  if (/(?:^|[/_-])(avatar|head|icon|logo|button|btn|emoji|face|loading|blank|default)(?:[/_.-]|$)/i.test(file)) {
+    return false;
+  }
+  if (bytes > 0 && bytes < minBytes) return false;
+  return true;
+}
+
+function selectVisionAssets(submission, maxImages = visionMaxImages()) {
+  const assets = (submission.assets || []).filter(a => a.ok && a.file);
+  const meaningful = assets.filter(isLikelyStudentAnswerImage);
+  const pool = meaningful.length ? meaningful : assets;
+  if (pool.length <= maxImages) return pool;
+
+  const selected = new Set();
+  const add = index => {
+    if (index >= 0 && index < pool.length) selected.add(pool[index]);
+  };
+
+  for (let index = 0; index < Math.min(3, pool.length, maxImages); index++) add(index);
+  for (let index = Math.max(0, pool.length - 2); index < pool.length; index++) add(index);
+
+  const bySize = [...pool]
+    .sort((a, b) => Number(b.bytes || 0) - Number(a.bytes || 0));
+  for (const asset of bySize) {
+    if (selected.size >= maxImages) break;
+    selected.add(asset);
+  }
+
+  return pool.filter(asset => selected.has(asset)).slice(0, maxImages);
+}
+
+function isVisionCacheFresh(cached, submission) {
+  const used = Array.isArray(cached?.usedImages) ? cached.usedImages.map(String) : [];
+  const current = selectVisionAssets(submission).map(asset => String(asset.file));
+  return used.length === current.length && used.every((file, index) => file === current[index]);
 }
 
 async function prepareImageForModel(file, runDir) {
@@ -2041,95 +2089,112 @@ async function browserSubmitReview(reviewUrl, score, comment) {
   const htmlComment = /<\/?[a-z][\s\S]*>/i.test(targetComment)
     ? targetComment
     : `<p>${escapeHtml(targetComment)}</p>`;
-  const html = await fetch(reviewUrl, { credentials: 'include' }).then(r => r.text());
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  const form = doc.querySelector('form[action*="save-review"], form');
-  if (!form) return { ok: false, error: 'review form not found' };
-  const action = new URL(form.getAttribute('action') || '/mooc2-ans/work/library/save-review', location.href);
-  action.searchParams.set('score', targetScore);
-  action.searchParams.set('markType', '1');
-  const data = new URLSearchParams();
-  for (const el of [...form.querySelectorAll('input, textarea, select')]) {
-    if (!el.name || el.disabled) continue;
-    if ((el.type === 'checkbox' || el.type === 'radio') && !el.checked) continue;
-    if (el.tagName === 'SELECT' && el.multiple) {
-      for (const option of [...el.options].filter(o => o.selected)) {
-        data.append(el.name, option.value ?? '');
-      }
-      continue;
-    }
-    data.append(el.name, el.value ?? '');
-  }
-
-  data.set('score', targetScore);
-  data.set('markType', '1');
-  data.set('back', '1');
-
-  const questionScoreNames = [...form.querySelectorAll('input[name^="score"]')]
-    .map(el => el.name)
-    .filter(name => /^score\d+$/.test(name));
-  for (const key of questionScoreNames) {
-    data.set(key, targetScore);
-  }
-
-  const questionIds = [...new Set(questionScoreNames.map(name => name.replace(/^score/, '')).filter(Boolean))];
-  if (questionIds.length) data.set('answerwqbid', `${questionIds.join(',')},`);
-
-  const commentInputs = [...form.querySelectorAll('textarea[name^="answer"], textarea[name="comment"], textarea[name="reason"]')]
-    .map(el => el.name)
-    .filter(Boolean);
-  for (const key of commentInputs) {
-    data.set(key, htmlComment);
-  }
-  if (!commentInputs.includes('comment')) data.set('comment', htmlComment);
-
-  const res = await fetch(action.href, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'x-requested-with': 'XMLHttpRequest',
-    },
-    body: data.toString(),
-  });
-  const text = await res.text();
-  let json = null;
   try {
-    json = JSON.parse(text);
-  } catch {
-    // Some pages return text during transient login or throttling states.
+    const html = await fetch(reviewUrl, { credentials: 'include' }).then(r => r.text());
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const form = doc.querySelector('form[action*="save-review"], form');
+    if (!form) {
+      return {
+        ok: false,
+        error: 'review form not found',
+        pageTitle: doc.title || '',
+        pageUrl: reviewUrl,
+        bodyPreview: (doc.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+      };
+    }
+    const action = new URL(form.getAttribute('action') || '/mooc2-ans/work/library/save-review', location.href);
+    action.searchParams.set('score', targetScore);
+    action.searchParams.set('markType', '1');
+    const data = new URLSearchParams();
+    for (const el of [...form.querySelectorAll('input, textarea, select')]) {
+      if (!el.name || el.disabled) continue;
+      if ((el.type === 'checkbox' || el.type === 'radio') && !el.checked) continue;
+      if (el.tagName === 'SELECT' && el.multiple) {
+        for (const option of [...el.options].filter(o => o.selected)) {
+          data.append(el.name, option.value ?? '');
+        }
+        continue;
+      }
+      data.append(el.name, el.value ?? '');
+    }
+
+    data.set('score', targetScore);
+    data.set('markType', '1');
+    data.set('back', '1');
+
+    const questionScoreNames = [...form.querySelectorAll('input[name^="score"]')]
+      .map(el => el.name)
+      .filter(name => /^score\d+$/.test(name));
+    for (const key of questionScoreNames) {
+      data.set(key, targetScore);
+    }
+
+    const questionIds = [...new Set(questionScoreNames.map(name => name.replace(/^score/, '')).filter(Boolean))];
+    if (questionIds.length) data.set('answerwqbid', `${questionIds.join(',')},`);
+
+    const commentInputs = [...form.querySelectorAll('textarea[name^="answer"], textarea[name="comment"], textarea[name="reason"]')]
+      .map(el => el.name)
+      .filter(Boolean);
+    for (const key of commentInputs) {
+      data.set(key, htmlComment);
+    }
+    if (!commentInputs.includes('comment')) data.set('comment', htmlComment);
+
+    const res = await fetch(action.href, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'x-requested-with': 'XMLHttpRequest',
+      },
+      body: data.toString(),
+    });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      // Some pages return text during transient login or throttling states.
+    }
+    const postOk = res.ok && (json ? json.status !== false : !/失败|错误|error/i.test(text.slice(0, 500)));
+
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const verifyUrl = new URL(reviewUrl, location.href);
+    verifyUrl.searchParams.set('_verify', String(Date.now()));
+    const verifyHtml = await fetch(verifyUrl.href, { credentials: 'include', cache: 'no-store' }).then(r => r.text());
+    const verifyDoc = new DOMParser().parseFromString(verifyHtml, 'text/html');
+    const scoreValues = [
+      verifyDoc.querySelector('#tmpscore')?.value,
+      verifyDoc.querySelector('input[name="score"]')?.value,
+      ...[...verifyDoc.querySelectorAll('input[name^="score"]')]
+        .filter(el => /^score\d+$/.test(el.name || ''))
+        .map(el => el.value),
+    ].filter(value => value != null && value !== '');
+    const savedComment = verifyDoc.querySelector('textarea[name="comment"], textarea[name="reason"], #textCon')?.value || '';
+    const expectedComment = normalizeReviewText(targetComment);
+    const actualComment = normalizeReviewText(savedComment);
+    const commentOk = !expectedComment || actualComment.includes(expectedComment);
+    const scoreOk = scoreValues.some(value => normalizeScore(value) === normalizeScore(targetScore));
+
+    return {
+      ok: Boolean(postOk && scoreOk && commentOk),
+      status: res.status,
+      postOk,
+      response: json || text.slice(0, 300),
+      scoreOk,
+      commentOk,
+      scoreValues,
+      commentPreview: actualComment.slice(0, 160),
+      action: action.pathname + action.search,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: String(error?.message || error),
+      stack: String(error?.stack || '').slice(0, 800),
+      pageUrl: reviewUrl,
+    };
   }
-  const postOk = res.ok && (json ? json.status !== false : !/失败|错误|error/i.test(text.slice(0, 500)));
-
-  await new Promise(resolve => setTimeout(resolve, 500));
-  const verifyUrl = new URL(reviewUrl, location.href);
-  verifyUrl.searchParams.set('_verify', String(Date.now()));
-  const verifyHtml = await fetch(verifyUrl.href, { credentials: 'include', cache: 'no-store' }).then(r => r.text());
-  const verifyDoc = new DOMParser().parseFromString(verifyHtml, 'text/html');
-  const scoreValues = [
-    verifyDoc.querySelector('#tmpscore')?.value,
-    verifyDoc.querySelector('input[name="score"]')?.value,
-    ...[...verifyDoc.querySelectorAll('input[name^="score"]')]
-      .filter(el => /^score\d+$/.test(el.name || ''))
-      .map(el => el.value),
-  ].filter(value => value != null && value !== '');
-  const savedComment = verifyDoc.querySelector('textarea[name="comment"], textarea[name="reason"], #textCon')?.value || '';
-  const expectedComment = normalizeReviewText(targetComment);
-  const actualComment = normalizeReviewText(savedComment);
-  const commentOk = !expectedComment || actualComment.includes(expectedComment);
-  const scoreOk = scoreValues.some(value => normalizeScore(value) === normalizeScore(targetScore));
-
-  return {
-    ok: Boolean(postOk && scoreOk && commentOk),
-    status: res.status,
-    postOk,
-    response: json || text.slice(0, 300),
-    scoreOk,
-    commentOk,
-    scoreValues,
-    commentPreview: actualComment.slice(0, 160),
-    action: action.pathname + action.search,
-  };
 }
 
 async function main() {
