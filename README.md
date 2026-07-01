@@ -150,6 +150,38 @@ MIMO_API_KEY="$MIMO_API_KEY" node review_memory_shell_assignment.mjs \
 
 脚本会输出 `memory_shell_review_overrides.json` 和 `memory_shell_review_summary.csv`。确认后可把 `memory_shell_review_overrides.json` 复制为对应运行目录的 `local_vision_overrides.json`，再重新执行 `grade`、`apply_advanced_similarity.mjs` 和报告生成流程。
 
+## 冰蝎 URL/路径一致性复核
+
+`build_behinder_url_consistency_report.mjs` 用于复核文件上传、SQL 注入、内存马等冰蝎/Behinder 相关作业的 URL/路径是否属于当前实验。
+
+规则要点：
+
+- 文件上传作业应指向上传目录，例如 `/campusbbs/uploads/*.jsp` 或 `/upload/*.jsp`。
+- SQL 注入作业允许 `/sqli/*.jsp`，也允许站点根目录下由 payload 自定义写入的 `hack/shell/*.jsp`。
+- 内存马作业应指向当前靶场内存马路径，例如 `/examonline/shell_*.txt`。
+- 脚本会优先把超星缩略图升级为 `origin` 高清原图后 OCR，高清图损坏时回退本地已下载图片。
+- 报告只写在本地，不应提交到公开仓库。
+
+生成复核报告：
+
+```bash
+node build_behinder_url_consistency_report.mjs --origin-timeout 12
+```
+
+输出示例：
+
+- `behinder_url_review/behinder_url_consistency_report.html`
+- `behinder_url_review/behinder_url_consistency_report.csv`
+- `behinder_url_review/behinder_url_consistency_all.json`
+
+如果需要查看叠加该复核结果后的临时总排名：
+
+```bash
+node build_rankings_with_behinder_overrides.mjs
+```
+
+该命令会输出本地文件 `score_rankings_behinder_adjusted.html`、`score_rankings_behinder_adjusted.json` 和 `class_total_rankings_behinder_adjusted.csv`。
+
 ## 早交加分
 
 生成带早交加分的草稿和排名：
@@ -185,6 +217,23 @@ node chaoxing-grader.mjs submit \
 ```bash
 node submit_all_early_bonus.mjs
 ```
+
+如果已经生成冰蝎 URL/路径一致性报告，并希望在写回前把建议降分合并进早交加分草稿，可先生成调整后草稿：
+
+```bash
+node build_submit_behinder_adjusted_drafts.mjs
+```
+
+该命令只处理配置中与冰蝎 URL/路径复核相关的作业，并在各运行目录生成 `grading_draft_submit_behinder_adjusted.json`。写回前先 dry-run：
+
+```bash
+node chaoxing-grader.mjs submit \
+  --run runs/assignment \
+  --draft runs/assignment/grading_draft_submit_behinder_adjusted.json \
+  --all --allow-zero
+```
+
+确认后再加 `--apply`。
 
 ## 脱敏要求
 

@@ -7,7 +7,7 @@
     "chaoxing-grader": "./chaoxing-grader.mjs"
   },
   "scripts": {
-    "check": "node --check chaoxing-grader.mjs && node --check collect_all_assignments.mjs && node --check report_all_assignments.mjs && node --check apply_advanced_similarity.mjs && node --check build_advanced_report.mjs && node --check model_similarity_review.mjs && node --check mimo_openclaw_regrade.mjs && node --check review_memory_shell_assignment.mjs"
+    "check": "node --check chaoxing-grader.mjs && node --check collect_all_assignments.mjs && node --check report_all_assignments.mjs && node --check apply_advanced_similarity.mjs && node --check build_advanced_report.mjs && node --check model_similarity_review.mjs && node --check mimo_openclaw_regrade.mjs && node --check review_memory_shell_assignment.mjs && node --check build_behinder_url_consistency_report.mjs && node --check build_rankings_with_behinder_overrides.mjs && node --check build_submit_behinder_adjusted_drafts.mjs"
   },
   "engines": {
     "node": ">=22"
