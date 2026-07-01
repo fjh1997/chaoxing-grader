@@ -1051,7 +1051,7 @@ function fallbackImageScore(submission) {
 function visionBasisLabel(visionResult) {
   const model = String(visionResult?.model || '');
   const risk = String(visionResult?.risk || '');
-  if (/local-evidence|local_review|本地截图复核/i.test(`${model}\n${risk}`)) return '本地截图复核';
+  if (/local-evidence|local_review|memory-shell|本地截图复核/i.test(`${model}\n${risk}`)) return '本地截图复核';
   return 'Mimo vision';
 }
 

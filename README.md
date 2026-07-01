@@ -126,6 +126,30 @@ node build_advanced_report.mjs runs/assignment-1 --replace-main
 
 提示词模板见 `prompts/pair_review.md`。
 
+## 内存马作业专项复核
+
+`review_memory_shell_assignment.mjs` 用于复核“内存马与代码注入审计”类作业。它会重点检查冰蝎/Behinder 截图是否显示本次作业可区分的内存马 URL 或路径，避免仅凭环境变量、目录列表、通用 `shell`/`hack` 标识给高分。
+
+OCR 规则模式：
+
+```bash
+node review_memory_shell_assignment.mjs \
+  --run runs/memory-shell-assignment \
+  --rules-only --force-review --all --delay 0
+```
+
+模型复核模式：
+
+```bash
+MIMO_API_KEY="$MIMO_API_KEY" node review_memory_shell_assignment.mjs \
+  --run runs/memory-shell-assignment \
+  --endpoint "$MIMO_ENDPOINT" \
+  --model "$MIMO_MODEL" \
+  --force-review --all
+```
+
+脚本会输出 `memory_shell_review_overrides.json` 和 `memory_shell_review_summary.csv`。确认后可把 `memory_shell_review_overrides.json` 复制为对应运行目录的 `local_vision_overrides.json`，再重新执行 `grade`、`apply_advanced_similarity.mjs` 和报告生成流程。
+
 ## 早交加分
 
 生成带早交加分的草稿和排名：
@@ -167,7 +191,7 @@ node submit_all_early_bonus.mjs
 提交到 GitHub 前至少检查：
 
 ```bash
-rg -n 'tp-[A-Za-z0-9]+|sk-[A-Za-z0-9]+|courseid=\d|clazzid=\d|cpi=\d|mooc2-ans\.chaoxing\.com/.+courseid=|[0-9]{10}' .
+rg -n 'tp-[A-Za-z0-9]+|sk-[A-Za-z0-9]+|courseid=\d|clazzid=\d|cpi=\d|mooc2-ans\.chaoxing\.com/.+courseid=|[0-9]{10}|(?:\d{1,3}\.){3}\d{1,3}' .
 ```
 
 本仓库 `.gitignore` 已忽略 `runs/`、`run-*`、`*.json`、`*.csv`、`*.html`、下载目录、模型输出和缓存目录。真实作业数据只应留在本地。

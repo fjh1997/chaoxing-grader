@@ -462,8 +462,8 @@ def exact_match(a, b):
 def high_specific_evidence(ev_score, ev_shared):
     shared = set(str(x).lower() for x in (ev_shared or []))
     has_rce_path = any(re.search(r"/rce[-_][a-z0-9_.-]*(?:b327|root|whoami|hostname)", x) for x in shared)
-    has_attacker_ip = any(x in shared for x in ["120.26.206.83", "100.104.113.249"])
-    has_target_or_server = any(x in shared for x in ["118.31.43.132", "http://0.0.0.0:8888/)"])
+    has_attacker_ip = any(re.search(r"\b(?:10|100|172|192|[1-9]\d?)\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", x) for x in shared)
+    has_target_or_server = any(re.search(r"(?:\b\d{1,3}(?:\.\d{1,3}){3}\b|https?://0\.0\.0\.0:\d{2,5})", x) for x in shared)
     return ev_score >= 0.95 and has_rce_path and has_attacker_ip and has_target_or_server
 
 

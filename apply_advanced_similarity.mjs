@@ -248,7 +248,7 @@ function baselineFromSubmission(row, sub) {
   const vision = sub?.vision;
   const hasVisionScore = vision && Number.isFinite(Number(vision.score));
   const shouldApplyVision = hasVisionScore && (
-    /local-evidence|local_review|本地截图复核|mimo-openclaw-rubric/i.test(`${vision.model || ''}\n${vision.risk || ''}`)
+    /local-evidence|local_review|memory-shell|本地截图复核|mimo-openclaw-rubric/i.test(`${vision.model || ''}\n${vision.risk || ''}`)
     || /has three or more submitted images|has partial but usable evidence|has limited evidence|no usable answer content extracted/.test(resetText)
     || /advanced-confirmed|高级相似检测 confirmed|人工覆盖评分|自动证据分档/.test(resetText)
   );
@@ -302,7 +302,7 @@ function rowFromVision(row, vision) {
 function visionBasisLabel(vision) {
   const model = String(vision?.model || '');
   const risk = String(vision?.risk || '');
-  if (/local-evidence|local_review|本地截图复核/i.test(`${model}\n${risk}`)) return '本地截图复核';
+  if (/local-evidence|local_review|memory-shell|本地截图复核/i.test(`${model}\n${risk}`)) return '本地截图复核';
   if (/mimo-openclaw-rubric/i.test(model)) return 'Mimo vision + 实验指导书';
   return 'Mimo vision';
 }
